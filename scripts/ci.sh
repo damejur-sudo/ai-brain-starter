@@ -160,6 +160,10 @@ INTEGRATION_TESTS=(
   test_worktree_session_close
   test_bootstrap_dry_run
   test_dry_run_purity
+  # Guards the HOME-sandbox fingerprint this very script uses to police the
+  # tests below: it must ignore session-written logs/locks/state (which no test
+  # causes) and still catch a rewritten deployed hook or settings.json.
+  test_home_fingerprint_noise
   test_phase_doc_slash_commands_installed
   test_reconcile_ff_invariant
   test_ai_brain_auto_update
@@ -402,6 +406,42 @@ WATCH_TREES = [
 ]
 WATCH_GLOBS = [str(claude / "hookify.*.md"), str(claude / "settings.local.json")]
 
+# RUNTIME NOISE — excluded from the fingerprint on purpose.
+#
+# The trees above are watched for their DEPLOYED CODE: a test that rewrites a
+# hook or a skill script has escaped its sandbox and must go red. But those same
+# directories also hold logs, lock files and append-only state that ordinary
+# session machinery writes continuously and that no test is responsible for:
+#
+#   ~/.claude/hooks/cwd-changed.log            written on every cwd change
+#   ~/.claude/hooks/sync-my-skills.log         the SessionStart/End auto-sync
+#   ~/.claude/hooks/sync.*.lock/pid            sync lock holders
+#   ~/.claude/state/settings-hook-integrity.jsonl   appended by hooks
+#
+# Measured on a machine running concurrent sessions: those trees are stable
+# across 8 quiet seconds but 5 files move within 3 minutes. A gate run takes
+# ~12, so the fingerprint changed EVERY time and the wrapper blamed whichever
+# test happened to be running — a RED the harness could not support, twice in a
+# row on a diff that was comment-only (MYC-3507, bug class
+# GATE-EMITS-A-VERDICT-IT-CANNOT-SUPPORT). A false RED is not a harmless
+# annoyance: the honest reading of a red is "I broke something", so it sends the
+# next session hunting a defect that does not exist, and repeated false reds
+# teach people to ignore the gate.
+#
+# Excluding these keeps the invariant the guard exists for — settings.json is
+# still content+mtime hashed, .bak-* still counted, and every deployed .py/.sh
+# still watched — while dropping the only inputs a test can neither cause nor
+# control.
+NOISE_SUFFIXES = (".log", ".jsonl", ".pid", ".lock")
+
+
+def _is_runtime_noise(path):
+    if path.name.endswith(NOISE_SUFFIXES):
+        return True
+    # sync.<name>.lock/ is a DIRECTORY holding a pid file; catch anything under it
+    return any(part.endswith(".lock") for part in path.parts)
+
+
 seen = []
 for tree in WATCH_TREES:
     if not tree.is_dir():
@@ -411,6 +451,8 @@ for tree in WATCH_TREES:
         dirs.sort()
         for name in sorted(files):
             fp = Path(root) / name
+            if _is_runtime_noise(fp):
+                continue
             try:
                 st = fp.stat()
             except OSError:
