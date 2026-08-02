@@ -88,11 +88,19 @@ if [ ! -s "$VIOLATIONS" ]; then
 else
   no "T1b: --dry-run attempted mutations: $(head -5 "$VIOLATIONS" | tr '\n' '; ')"
 fi
-if printf '%s' "$OUT" | grep -q '\[dry-run\]'; then
-  ok "T1c: dry-run preview lines are printed"
-else
-  no "T1c: no [dry-run] preview lines in output"
-fi
+# No pipe on purpose. `printf "$OUT" | grep -q` races under `set -o pipefail`
+# (line 21): grep -q exits 0 the instant it matches, closing the pipe while
+# printf is still writing the large bootstrap output, so printf takes EPIPE and
+# pipefail promotes that non-zero to the whole pipeline. The check then INVERTS
+# exactly when it should pass — observed live as
+# "line 91: printf: write error: Broken pipe" immediately followed by
+# "FAIL: T1c: no [dry-run] preview lines in output", on a run where the preview
+# lines were plainly present. `case` does the same substring test in-shell:
+# no subprocess, no pipe, no race. The quotes make the brackets literal.
+case "$OUT" in
+  *"[dry-run]"*) ok "T1c: dry-run preview lines are printed" ;;
+  *)             no "T1c: no [dry-run] preview lines in output" ;;
+esac
 if [ ! -f "$FAKEHOME/.claude/settings.json" ] && [ ! -f "$FAKEHOME/.claude/.mcp.json" ]; then
   ok "T1d: no settings.json / .mcp.json written under --dry-run"
 else
